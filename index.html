@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="no">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HLT Semesterplan – Høst 2026</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="app-header">
+      <h1>HLT Semesterplan</h1>
+      <span class="term" id="term-label"></span>
+    </header>
+    <p class="disclaimer">
+      Undervisningstimer er 45 min. Øktene starter 09:00 (man 10:00) og 12:30, med lunsj imellom.
+      <button class="btn link" id="info-btn">Les mer / fagpersoner</button>
+    </p>
+
+    <div class="toolbar">
+      <input class="search-input" id="search-input" type="search" placeholder="Søk emne, emnekode eller foreleser…">
+
+      <details class="filter-popover">
+        <summary>Emne <span class="count" id="course-count">Alle</span></summary>
+        <div class="popover-panel" id="course-panel"></div>
+      </details>
+
+      <button class="btn" id="reset-filters">Nullstill</button>
+      <button class="btn" id="export-ics" title="Last ned valgte timer som kalenderfil">↓ Kalenderfil</button>
+    </div>
+
+    <div class="active-filters" id="active-filters"></div>
+
+    <nav class="tabs">
+      <button data-view="month" class="active">Måned</button>
+      <button data-view="week">Uke (timeplan)</button>
+      <button data-view="agenda">Liste</button>
+      <button data-view="timeline">Emneoversikt</button>
+      <button data-view="stats">Statistikk</button>
+    </nav>
+
+    <main id="view-root"></main>
+
+    <details class="legend-footer">
+      <summary>Om datagrunnlaget</summary>
+      <p class="legend-note">
+        Data er hentet direkte fra <code>Semesterplan-H26 8.xlsx</code>, arkfane «Høst 26».
+        Tallene i regnearket viser antall undervisningstimer per dato; klokkeslettene her er beregnet.
+      </p>
+    </details>
+  </div>
+
+  <div id="modal-root"></div>
+  <div id="admin-root"></div>
+
+  <script src="data.js"></script>
+  <script src="exams.js"></script>
+  <script src="xlsx.js"></script>
+  <script src="parse-plan.js"></script>
+  <script src="admin.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
