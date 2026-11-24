@@ -1,17 +1,30 @@
 (function () {
   "use strict";
-  const DATA = window.HLT_DATA;
-  const SECTIONS = DATA.sections;
-  const COURSES = DATA.courses;
-  const STAFF = DATA.staff_legend;
-  const WEEK_NOTES = DATA.week_notes;
-  const DAY_NOTES = DATA.day_notes;
+  // Each semester registers itself into window.HLT_PLANS, so adding a term is
+  // a matter of shipping one more data file. Everything below reads the plan
+  // that is currently selected rather than a single hard-wired one.
+  const PLANS = window.HLT_PLANS || {};
+  const PLAN_IDS = Object.keys(PLANS).sort((a, b) => {
+    const sa = (PLANS[a].date_range || {}).start || "";
+    const sb = (PLANS[b].date_range || {}).start || "";
+    return sa.localeCompare(sb);
+  });
+  if (!PLAN_IDS.length) throw new Error("Ingen semesterplaner er lastet.");
 
-  // Exams come from the exam-date PDF, not the semester spreadsheet, so they
-  // load from their own file and are absent if that file is not deployed.
-  const EXAM_DATA = window.HLT_EXAMS || { exams: [], source: null, note: null };
-  const EXAMS = EXAM_DATA.exams || [];
-  const COURSE_BY_KEY = new Map();
+  // Exams are per semester; a term without a published exam list simply has
+  // none, and the exam features hide themselves.
+  const EXAMS_BY_PLAN = window.HLT_EXAMS_BY_PLAN || {};
+
+  let PLAN_ID = PLAN_IDS[0];
+  let DATA, SECTIONS, COURSES, STAFF, WEEK_NOTES, DAY_NOTES;
+  let EXAM_DATA, EXAMS;
+  let PLAN_YEAR = 2026;
+  let COURSE_BY_KEY = new Map();
+  let ALL_COURSE_IDS = [];
+  let EXAM_EVENTS = [];
+  let WEEK_STARTS = [];
+  let CONTENT_MONTHS = [];
+  let TIMELINE_WEEKS = [];
 
   const NOW = new Date();
   const TODAY_ISO = NOW.toISOString().slice(0, 10);
@@ -58,8 +71,6 @@
     return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }
 
-  const ALL_COURSE_IDS = COURSES.map((c) => c.id);
-
   function courseLabel(c) {
     return c.code || c.title;
   }
@@ -84,7 +95,7 @@
     // Exams are shown alongside teaching; they can be hidden on their own.
     showExams: true,
     view: "month",
-    monthCursor: { year: 2026, month: 8 },
+    monthCursor: { year: 2026, month: 8 }, // replaced by resetCursors()
     // Monday of the displayed week, as an ISO date. Stored as a date rather
     // than a week number because exams run past new year into 2027.
     weekStart: null,
@@ -93,13 +104,17 @@
   // ------------------------------------------------------- saved preferences
   // Selections are stored per browser under stable course keys, so they survive
   // a reload and a re-uploaded plan that shifts row numbers around.
-  const STORAGE_KEY = "hlt-semesterplan-valg-v1";
+  // Keyed by semester: a course picked in the autumn plan means nothing in the
+  // spring one, so each term remembers its own selection.
+  const STORAGE_PREFIX = "hlt-semesterplan-valg-v1";
+  const PLAN_STORAGE_KEY = "hlt-semesterplan-valgt-plan-v1";
+  const storageKey = () => STORAGE_PREFIX + ":" + PLAN_ID;
 
   function savePrefs() {
     try {
       const all = COURSES.length && COURSES.every((c) => state.courseIds.has(c.id));
       localStorage.setItem(
-        STORAGE_KEY,
+        storageKey(),
         JSON.stringify({
           all,
           courses: all ? [] : COURSES.filter((c) => state.courseIds.has(c.id)).map((c) => c.key),
@@ -115,7 +130,7 @@
   function loadPrefs() {
     let saved = null;
     try {
-      saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
+      saved = JSON.parse(localStorage.getItem(storageKey()) || "null");
     } catch (e) {
       saved = null;
     }
@@ -130,11 +145,7 @@
     if (matched.length) state.courseIds = new Set(matched.map((c) => c.id));
   }
 
-  loadPrefs();
-
   // ------------------------------------------------------------------- exams
-  COURSES.forEach((c) => COURSE_BY_KEY.set(c.key, c));
-
   const EXAM_KIND_LABEL = { skoleeksamen: "Skoleeksamen", muntlig: "Muntlig eksamen", innlevering: "Innlevering" };
 
   function examName(exam) {
@@ -143,7 +154,7 @@
 
   // One calendar entry per sitting or deadline. A submission has no start
   // time — only the deadline — so `deadline` marks which kind of block to draw.
-  const EXAM_EVENTS = (() => {
+  function buildExamEvents() {
     const out = [];
     EXAMS.forEach((exam) => {
       const course = exam.course_key ? COURSE_BY_KEY.get(exam.course_key) || null : null;
@@ -165,7 +176,7 @@
     });
     out.sort((a, b) => (a.date + (a.start || a.end || "")).localeCompare(b.date + (b.start || b.end || "")));
     return out;
-  })();
+  }
 
   // Exams follow the course picker. One that has no course in the plan (the
   // Norwegian VEL5040) would otherwise be unreachable, so it always shows.
@@ -185,6 +196,24 @@
     });
   }
 
+  // Some plans mark days that belong to a course without being taught hours —
+  // a practice placement, a study trip. They carry no clock time.
+  function visibleMarkers() {
+    const out = [];
+    const needle = state.search.trim().toLowerCase();
+    COURSES.forEach((c) => {
+      if (!c.markers || !c.markers.length) return;
+      if (!state.courseIds.has(c.id)) return;
+      if (needle && !courseHaystack(c).includes(needle)) return;
+      c.markers.forEach((m) => out.push({ isMarker: true, course: c, date: m.date, code: m.code, label: m.label }));
+    });
+    return out.sort((a, b) => a.date.localeCompare(b.date));
+  }
+
+  function markersByDate() {
+    return eventsByDate(visibleMarkers());
+  }
+
   function examsForCourse(course) {
     return EXAMS.filter((x) => x.course_key === course.key);
   }
@@ -192,7 +221,7 @@
   // ------------------------------------------------------------ week cursor
   // Every Monday that has teaching or an exam, so the week picker reaches into
   // the exam period after the teaching plan ends.
-  const WEEK_STARTS = (() => {
+  function buildWeekStarts() {
     const set = new Set();
     const add = (iso) => {
       const d = parseISO(iso);
@@ -202,21 +231,63 @@
     COURSES.forEach((c) => c.sessions.forEach((s) => add(s.date)));
     EXAM_EVENTS.forEach((e) => add(e.date));
     return Array.from(set).sort();
-  })();
+  }
 
-  (function initWeekCursor() {
+  // Point the calendar at today if the selected term is running, otherwise at
+  // its first teaching week.
+  function resetCursors() {
     state.weekStart = WEEK_STARTS[0] || toISO(NOW);
-    // Land on the current week if the term is under way.
+    const first = WEEK_STARTS[0];
+    const last = WEEK_STARTS[WEEK_STARTS.length - 1];
     const monday = new Date(NOW.getTime());
     monday.setDate(monday.getDate() - (isoWeekday(monday) - 1));
     const thisWeek = toISO(monday);
     if (WEEK_STARTS.includes(thisWeek)) state.weekStart = thisWeek;
-    const first = WEEK_STARTS[0];
-    const last = WEEK_STARTS[WEEK_STARTS.length - 1];
+    state.monthCursor = CONTENT_MONTHS.length
+      ? { year: Number(CONTENT_MONTHS[0].slice(0, 4)), month: Number(CONTENT_MONTHS[0].slice(5, 7)) }
+      : { year: NOW.getFullYear(), month: NOW.getMonth() + 1 };
     if (first && TODAY_ISO >= first && TODAY_ISO <= last) {
       state.monthCursor = { year: NOW.getFullYear(), month: NOW.getMonth() + 1 };
     }
-  })();
+  }
+
+  // Swap in a semester: rebind the plan, rebuild everything derived from it,
+  // and restore that term's own saved selection.
+  function usePlan(id) {
+    PLAN_ID = PLANS[id] ? id : PLAN_IDS[0];
+    DATA = PLANS[PLAN_ID];
+    SECTIONS = DATA.sections;
+    COURSES = DATA.courses;
+    STAFF = DATA.staff_legend || {};
+    WEEK_NOTES = DATA.week_notes || {};
+    DAY_NOTES = DATA.day_notes || {};
+    EXAM_DATA = EXAMS_BY_PLAN[PLAN_ID] || { exams: [], source: null, note: null };
+    EXAMS = EXAM_DATA.exams || [];
+    // The year the plan's week numbers belong to, and the one the UI can leave
+    // unsaid because every date already sits in it.
+    PLAN_YEAR = Number(((DATA.date_range || {}).start || "2026").slice(0, 4));
+
+    COURSE_BY_KEY = new Map();
+    COURSES.forEach((c) => COURSE_BY_KEY.set(c.key, c));
+    ALL_COURSE_IDS = COURSES.map((c) => c.id);
+
+    state.courseIds = new Set(ALL_COURSE_IDS);
+    state.reducedOnly = false;
+    state.showExams = true;
+    loadPrefs();
+
+    EXAM_EVENTS = buildExamEvents();
+    WEEK_STARTS = buildWeekStarts();
+    CONTENT_MONTHS = buildContentMonths();
+    TIMELINE_WEEKS = buildTimelineWeeks();
+    resetCursors();
+
+    try {
+      localStorage.setItem(PLAN_STORAGE_KEY, PLAN_ID);
+    } catch (e) {
+      /* no storage; the choice simply does not persist */
+    }
+  }
 
   // --------------------------------------------------------------- filtering
   function courseHaystack(c) {
@@ -325,6 +396,15 @@
     body += `<p class="modal-sub">Foreleser(e): ${c.lecturers.length ? c.lecturers.map(legendName).join(", ") : "–"} · Totalt ${c.total_hours ?? "?"} timer</p>`;
     if (c.notes && c.notes.length) {
       body += c.notes.map((n) => `<p class="modal-sub" style="font-style:italic">${n.date ? fmtDayMonth(parseISO(n.date)) + ": " : ""}${escapeHtml(n.text)}</p>`).join("");
+    }
+    if (c.markers && c.markers.length) {
+      body += `<h4 class="modal-h">Merkede dager</h4>`;
+      body += c.markers
+        .map((m) => {
+          const d = parseISO(m.date);
+          return `<div class="modal-session"><div class="m-code">${DOW_SHORT[isoWeekday(d) - 1]} ${fmtDayMonth(d)}</div><div class="m-meta">${escapeHtml(m.label)}</div></div>`;
+        })
+        .join("");
     }
     const courseExams = examsForCourse(c);
     if (courseExams.length) {
@@ -442,7 +522,14 @@
       .map(([code, name]) => `<div>${escapeHtml(code)} — ${escapeHtml(name)}</div>`)
       .join("");
     const body = `
-      <p class="modal-sub">${escapeHtml(DATA.generated_note)}</p>
+      <p class="modal-sub">${escapeHtml(DATA.term)}${
+      DATA.generated_note ? " · " + escapeHtml(DATA.generated_note) : ""
+    }${DATA.source ? " · " + escapeHtml(DATA.source) : ""}</p>
+      ${
+        PLAN_IDS.length > 1
+          ? `<p class="modal-sub">Nettstedet viser ${PLAN_IDS.length} semestre. Bytt semester øverst til høyre; emnevalg og innstillinger huskes per semester.</p>`
+          : ""
+      }
       <h3 style="margin-top:14px">Beregning av start- og sluttider</h3>
       <p class="modal-sub">Semesterplanen viser antall undervisningstimer per dag — ingen klokkeslett. Én time er en <strong>undervisningstime på 45 minutter</strong>, med 15 minutters pause mellom timene. En økt med N timer varer derfor N×45 + (N−1)×15 minutter: 1 time = 45 min, 2 timer = 1 t 45 min, 3 timer = 2 t 45 min, 4 timer = 3 t 45 min.</p>
       <p class="modal-sub">Undervisningen går i to faste økter: formiddagsøkten starter <strong>09:00</strong> (mandager <strong>10:00</strong>), og ettermiddagsøkten starter alltid <strong>12:30</strong>. Lunsjen er tiden som blir igjen mellom øktene. Det gir disse sluttidene:</p>
@@ -460,13 +547,13 @@
       <h3 style="margin-top:14px">Redusert undervisning</h3>
       <p class="modal-sub">Emner merket <strong>R</strong> i emnevelgeren tilbyr redusert undervisning. Slår du på «Redusert undervisning» der, vises bare datoene som er obligatoriske for disse emnene. Hvilke datoer det gjelder er hentet fra fargemerkingen i regnearket, slik forklaringen i planen beskriver.</p>
       <p class="modal-sub">${escapeHtml(DATA.reduced_teaching_note || "")}</p>
-      <h3 style="margin-top:14px">Eksamen</h3>
-      <p class="modal-sub">Eksamensdatoer og innleveringsfrister kommer fra ${escapeHtml(
+      ${EXAMS.length ? `<h3 style="margin-top:14px">Eksamen</h3>` : ""}
+      ${EXAMS.length ? `<p class="modal-sub">Eksamensdatoer og innleveringsfrister kommer fra ${escapeHtml(
         EXAM_DATA.source || "eksamensoversikten"
       )} og vises sammen med undervisningen. Fylt merke er en eksamen du møter opp til; åpent merke er en innleveringsfrist (kl. 12:00). Eksamener følger emnevalget, og kan skjules med «Vis eksamener» i emnevelgeren. ${escapeHtml(
         EXAM_DATA.note || ""
       )}</p>
-      <p class="modal-sub">Sensurfrist står i detaljene for hver eksamen. Noen emner mangler dato fordi oversikten venter på emneansvarlig; de er merket i emnevisningen.</p>
+      <p class="modal-sub">Sensurfrist står i detaljene for hver eksamen. Noen emner mangler dato fordi oversikten venter på emneansvarlig; de er merket i emnevisningen.</p>` : `<p class="modal-sub">Det er ikke publisert eksamensdatoer for ${escapeHtml(DATA.term)} ennå.</p>`}
       <h3 style="margin-top:14px">Lagring</h3>
       <p class="modal-sub">Emnevalget og innstillingen for redusert undervisning lagres i denne nettleseren, så de er der neste gang du åpner siden. «Nullstill» tømmer dem.</p>
       <h3 style="margin-top:14px">Fagpersoner</h3>
@@ -537,6 +624,7 @@
     const sessions = flatSessions(filteredCourses());
     const byDate = eventsByDate(sessions);
     const examsByDate = eventsByDate(visibleExamEvents());
+    const markerDates = markersByDate();
 
     const first = new Date(year, month - 1, 1);
     const startOffset = isoWeekday(first) - 1;
@@ -580,6 +668,11 @@
       if (weekNote && isoWeekday(d) === 1) html += `<div class="week-flag">${escapeHtml(weekNote)}</div>`;
       if (dayNote && dayNote.event) html += `<div class="event-note" title="${escapeHtml(dayNote.event)}">${escapeHtml(dayNote.event)}</div>`;
       html += `<div class="chips-wrap">`;
+      (markerDates.get(iso) || []).forEach((m) => {
+        html += `<div class="session-chip marker-chip" title="${escapeHtml(
+          (m.course.code ? m.course.code + " – " : "") + m.course.title + " · " + m.label
+        )}">${escapeHtml(m.course.code || m.course.title.slice(0, 10))} ${escapeHtml(m.label)}</div>`;
+      });
       // Exams first: they are the fixed points a student plans around.
       (examsByDate.get(iso) || []).forEach((e) => {
         html += `<div class="session-chip exam-chip${e.deadline ? " exam-chip-deadline" : ""}" title="${escapeHtml(
@@ -612,7 +705,7 @@
       renderView();
     };
     root.querySelector('[data-act="month-today"]').onclick = () => {
-      state.monthCursor = { year: 2026, month: 8 };
+      resetCursors();
       if (TODAY_ISO >= DATA.date_range.start && TODAY_ISO <= DATA.date_range.end) {
         state.monthCursor = { year: NOW.getFullYear(), month: NOW.getMonth() + 1 };
       }
@@ -628,12 +721,12 @@
 
   // Every month holding teaching or an exam, so the picker reaches the exam
   // period that runs past the end of the teaching plan.
-  const CONTENT_MONTHS = (() => {
+  function buildContentMonths() {
     const set = new Set();
     COURSES.forEach((c) => c.sessions.forEach((s) => set.add(s.date.slice(0, 7))));
     EXAM_EVENTS.forEach((e) => set.add(e.date.slice(0, 7)));
     return Array.from(set).sort();
-  })();
+  }
 
   function monthOptions(curYear, curMonth) {
     const cur = curYear + "-" + String(curMonth).padStart(2, "0");
@@ -660,7 +753,7 @@
       const sat = new Date(mon.getTime());
       sat.setDate(mon.getDate() + 5);
       const label = `Uke ${getISOWeek(mon)} (${fmtDayMonth(mon)}–${fmtDayMonth(sat)}${
-        mon.getFullYear() !== 2026 ? " " + mon.getFullYear() : ""
+        mon.getFullYear() !== PLAN_YEAR ? " " + mon.getFullYear() : ""
       })`;
       return `<option value="${iso}" ${iso === cur ? "selected" : ""}>${label}</option>`;
     }).join("");
@@ -722,7 +815,7 @@
     let html = `<div class="view-nav">
       <div class="nav-btns">
         <button class="btn" data-act="week-prev">‹</button>
-        <h2>Uke ${wk}${monday.getFullYear() !== 2026 ? " · " + monday.getFullYear() : ""}${weekNote ? " · " + escapeHtml(weekNote) : ""}</h2>
+        <h2>Uke ${wk}${monday.getFullYear() !== PLAN_YEAR ? " · " + monday.getFullYear() : ""}${weekNote ? " · " + escapeHtml(weekNote) : ""}</h2>
         <button class="btn" data-act="week-next">›</button>
       </div>
       <div class="nav-btns"><select data-act="week-select">${weekOptions(state.weekStart)}</select></div>
@@ -846,11 +939,14 @@
   function renderAgenda(root) {
     const sessions = flatSessions(filteredCourses());
     const exams = visibleExamEvents();
-    if (!sessions.length && !exams.length) {
+    const markers = visibleMarkers();
+    if (!sessions.length && !exams.length && !markers.length) {
       root.innerHTML = `<p class="empty-state">Ingen treff for valgte filtre/søk.</p>`;
       return;
     }
-    const byDate = eventsByDate(sessions.concat(exams.map(examAsBlock)));
+    const byDate = eventsByDate(
+      sessions.concat(exams.map(examAsBlock), markers.map((m) => ({ ...m, start: "00:00", end: "00:00" })))
+    );
     const dates = Array.from(byDate.keys()).sort();
     let html = "";
     let curMonth = "";
@@ -868,6 +964,15 @@
       html += `<div class="agenda-day-header">${DOW_FULL[isoWeekday(d) - 1]} ${fmtDayMonth(d)} <span class="wk">uke ${wk}${weekNote ? " · " + escapeHtml(weekNote) : ""}${dayNote && dayNote.event ? " · " + escapeHtml(dayNote.event) : ""}</span></div>`;
       const evs = byDate.get(iso).slice().sort((a, b) => a.start.localeCompare(b.start));
       evs.forEach((s) => {
+        if (s.isMarker) {
+          html += `<div class="agenda-row agenda-marker" data-act="course" data-id="${s.course.id}" style="cursor:pointer">
+            <div class="time">${escapeHtml(s.label)}</div>
+            <div class="tag marker-tag">${escapeHtml(s.course.code || "—")}</div>
+            <div class="title">${escapeHtml(s.course.title)}</div>
+            <div class="lect">${escapeHtml(s.course.lecturers.join("/"))}</div>
+          </div>`;
+          return;
+        }
         if (s.isExam) {
           const e = s.event;
           html += `<div class="agenda-row agenda-exam" data-act="exam" data-id="${e.exam.id}" style="cursor:pointer">
@@ -900,14 +1005,14 @@
   // exam period. The sheet's grid also reaches back into July, which never has
   // a class and only wasted width on a misleading "Jul" label. Derived from
   // every course, not the filtered set, so the axis holds still while filtering.
-  const TIMELINE_WEEKS = (() => {
+  function buildTimelineWeeks() {
     const weeks = COURSES.flatMap((c) => c.sessions.map((s) => s.week)).filter((w) => typeof w === "number");
     Object.keys(WEEK_NOTES).forEach((w) => weeks.push(Number(w)));
     const out = [];
     if (!weeks.length) return out;
     for (let i = Math.min(...weeks); i <= Math.max(...weeks); i++) out.push(i);
     return out;
-  })();
+  }
 
   // Weeks flagged in the sheet (exams, research week) — shown on the axis so a
   // stretch with no teaching still explains itself.
@@ -926,7 +1031,7 @@
     const out = [];
     let last = null;
     TIMELINE_WEEKS.forEach((w, idx) => {
-      const m = isoWeekToMonday(2026, w).getMonth() + 1;
+      const m = isoWeekToMonday(PLAN_YEAR, w).getMonth() + 1;
       if (m !== last) {
         out.push({ idx, month: m, label: MONTH_NAMES[m].slice(0, 3) });
         last = m;
@@ -1071,7 +1176,7 @@
     html += `<div class="timeline-months" style="grid-template-columns:260px repeat(${WEEKS.length},1fr)"><div></div>`;
     let lastMonth = "";
     WEEKS.forEach((w) => {
-      const mon = isoWeekToMonday(2026, w);
+      const mon = isoWeekToMonday(PLAN_YEAR, w);
       const mLabel = MONTH_NAMES[mon.getMonth() + 1].slice(0, 3);
       html += `<div>${mLabel !== lastMonth ? mLabel : ""}</div>`;
       lastMonth = mLabel;
@@ -1503,8 +1608,60 @@
     });
   }
 
-  document.addEventListener("DOMContentLoaded", () => {
+  // The semester picker only earns its place when there is more than one term.
+  function buildPlanSwitcher() {
+    const host = document.getElementById("plan-switcher");
+    if (!host) return;
+    if (PLAN_IDS.length < 2) {
+      host.hidden = true;
+      return;
+    }
+    host.hidden = false;
+    host.innerHTML = PLAN_IDS.map(
+      (id) =>
+        `<button data-plan="${escapeHtml(id)}" class="${id === PLAN_ID ? "active" : ""}">${escapeHtml(
+          PLANS[id].term || id
+        )}</button>`
+    ).join("");
+    host.querySelectorAll("[data-plan]").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        if (btn.dataset.plan === PLAN_ID) return;
+        usePlan(btn.dataset.plan);
+        afterPlanChange();
+      })
+    );
+  }
+
+  function afterPlanChange() {
     document.getElementById("term-label").textContent = DATA.term;
+    buildPlanSwitcher();
+    syncFilterUI();
+    renderView();
+  }
+
+  function initialPlan() {
+    let saved = null;
+    try {
+      saved = localStorage.getItem(PLAN_STORAGE_KEY);
+    } catch (e) {
+      saved = null;
+    }
+    if (saved && PLANS[saved]) return saved;
+    // No choice stored: show the term that today falls in, else the next one
+    // to start, else the most recent.
+    const running = PLAN_IDS.find((id) => {
+      const r = PLANS[id].date_range || {};
+      return r.start && r.end && TODAY_ISO >= r.start && TODAY_ISO <= r.end;
+    });
+    if (running) return running;
+    const upcoming = PLAN_IDS.find((id) => ((PLANS[id].date_range || {}).start || "") > TODAY_ISO);
+    return upcoming || PLAN_IDS[PLAN_IDS.length - 1];
+  }
+
+  document.addEventListener("DOMContentLoaded", () => {
+    usePlan(initialPlan());
+    document.getElementById("term-label").textContent = DATA.term;
+    buildPlanSwitcher();
     buildToolbar();
     buildTabs();
     renderView();

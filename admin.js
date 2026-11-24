@@ -10,6 +10,9 @@
 
   const PIN = "0175";
   const DATA_KEY = "hlt-semesterplan-data-v1";
+  // The spreadsheet parser reads the autumn plan's layout. The spring plan
+  // comes from a PDF and is built by script, so it is not replaceable here.
+  const UPLOAD_PLAN_ID = "h26";
 
   // Applied before app.js reads window.HLT_DATA, so an uploaded plan wins over
   // the bundled data.js for this browser.
@@ -19,8 +22,11 @@
       if (!raw) return;
       const stored = JSON.parse(raw);
       if (stored && stored.data && Array.isArray(stored.data.courses) && stored.data.courses.length) {
-        window.HLT_DATA = stored.data;
-        window.HLT_DATA_SOURCE = { local: true, uploaded: stored.uploaded, filename: stored.filename };
+        window.HLT_PLANS = window.HLT_PLANS || {};
+        const id = stored.planId || UPLOAD_PLAN_ID;
+        stored.data.plan_id = id;
+        window.HLT_PLANS[id] = stored.data;
+        window.HLT_DATA_SOURCE = { local: true, uploaded: stored.uploaded, filename: stored.filename, planId: id };
       }
     } catch (e) {
       /* corrupt entry — fall back to the bundled plan */
@@ -96,12 +102,13 @@
 
   function showPanel() {
     const source = window.HLT_DATA_SOURCE;
-    const current = window.HLT_DATA;
+    const plans = window.HLT_PLANS || {};
+    const current = plans[UPLOAD_PLAN_ID] || Object.values(plans)[0] || { courses: [], date_range: {} };
 
     const status = el("p", { class: "modal-sub" });
     status.textContent = source && source.local
-      ? `Viser opplastet plan: ${source.filename || "ukjent fil"} (${fmtWhen(source.uploaded)}).`
-      : "Viser planen som ligger i data.js på serveren.";
+      ? `Opplastet plan i bruk: ${source.filename || "ukjent fil"} (${fmtWhen(source.uploaded)}).`
+      : "Alle semestre vises slik de ligger på serveren.";
 
     const summary = el("div", { class: "admin-summary" });
     summary.innerHTML =
@@ -154,7 +161,12 @@
       try {
         localStorage.setItem(
           DATA_KEY,
-          JSON.stringify({ data: parsed.data, filename: parsed.filename, uploaded: new Date().toISOString() })
+          JSON.stringify({
+            data: parsed.data,
+            planId: UPLOAD_PLAN_ID,
+            filename: parsed.filename,
+            uploaded: new Date().toISOString(),
+          })
         );
       } catch (e) {
         result.className = "admin-result err";
@@ -182,7 +194,12 @@
 
     downloadBtn.onclick = async () => {
       if (!parsed) return;
-      const payload = "window.HLT_DATA = " + JSON.stringify(parsed.data) + ";";
+      const payload =
+        'window.HLT_PLANS = window.HLT_PLANS || {};\nwindow.HLT_PLANS["' +
+        UPLOAD_PLAN_ID +
+        '"] = ' +
+        JSON.stringify(parsed.data) +
+        ";";
 
       if (!SINGLE_FILE) {
         saveBlob(new Blob([payload], { type: "application/javascript" }), "data.js");
@@ -194,9 +211,11 @@
       try {
         const html = await (await fetch(window.location.href, { cache: "reload" })).text();
         const lines = html.split("\n");
-        const i = lines.findIndex((line) => line.startsWith("window.HLT_DATA = "));
+        const marker = 'window.HLT_PLANS["' + UPLOAD_PLAN_ID + '"] = ';
+        const i = lines.findIndex((line) => line.startsWith(marker));
         if (i === -1) throw new Error("fant ikke plandataene i filen");
-        lines[i] = guardScript(payload);
+        // Only the plan's own line is swapped; the registry preamble stays.
+        lines[i] = guardScript(payload.split("\n").pop());
         saveBlob(new Blob([lines.join("\n")], { type: "text/html;charset=utf-8" }), "index.html");
       } catch (err) {
         result.className = "admin-result err";
@@ -216,6 +235,7 @@
       summary,
       el("h4", { class: "admin-h", text: "Last opp ny semesterplan" }),
       el("p", { class: "modal-sub", text: "Velg en .xlsx-fil med samme oppsett som Semesterplan-H26. Filen leses i nettleseren; ingenting sendes noe sted." }),
+      el("p", { class: "admin-note", text: "Opplasting erstatter høstplanen (" + UPLOAD_PLAN_ID + "). Vårplanen bygges fra PDF med build_v27.py og kan ikke lastes opp her." }),
       file,
       result,
       el("div", { class: "admin-actions" }, [applyBtn, downloadBtn]),

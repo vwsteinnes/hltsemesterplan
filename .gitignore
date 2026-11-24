@@ -1,0 +1,13 @@
+# macOS
+.DS_Store
+
+# Claude Code session files
+.claude/
+
+# Source documents the site is built from.
+# These are internal HLT documents — the spring plan is still a draft
+# ("Utkast 25 – med forbehold om endringer"). A public repo publishes every
+# file in it, so they are kept out by default. Delete these two lines if you
+# want them versioned alongside the build scripts.
+*.xlsx
+Semesterplan-V27.pdf
