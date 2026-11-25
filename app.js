@@ -1250,19 +1250,38 @@
     html += `</div>`;
 
     // The week axis follows the active plan (autumn runs ~31-51, spring ~1-20),
-    // so this must not be a hardcoded range.
+    // so this must not be a hardcoded range. Weeks are grouped into the month
+    // their Monday falls in, the same convention the timeline axis uses.
     const statWeeks = TIMELINE_WEEKS.length
       ? TIMELINE_WEEKS
       : Object.keys(byWeek).map(Number).sort((a, b) => a - b);
     if (statWeeks.length) {
-      html += `<div class="card" style="grid-column:1/-1"><h3>Timer per uke</h3>`;
-      html += `<div class="weekbars-wrap"><div class="weekbars">`;
+      const groups = [];
       statWeeks.forEach((w) => {
-        const h = byWeek[w] || 0;
-        html += `<div class="wb" style="height:${Math.max(2, (h / maxWeek) * 90)}px" title="Uke ${w}: ${fmtHours(h)} t"></div>`;
+        const m = isoWeekToMonday(PLAN_YEAR, w).getMonth() + 1;
+        const last = groups[groups.length - 1];
+        if (last && last.month === m) last.weeks.push(w);
+        else groups.push({ month: m, weeks: [w] });
       });
-      html += `</div><div class="weekbars-labels">`;
-      statWeeks.forEach((w) => (html += `<span>${w}</span>`));
+
+      html += `<div class="card" style="grid-column:1/-1"><h3>Timer per uke</h3>`;
+      html += `<p class="card-sub">Antall undervisningstimer per uke, gruppert etter måned.</p>`;
+      html += `<div class="weekbars-wrap"><div class="weekchart">`;
+      groups.forEach((g) => {
+        html += `<div class="wc-month" style="flex-grow:${g.weeks.length}">`;
+        html += `<div class="weekbars">`;
+        g.weeks.forEach((w) => {
+          const h = byWeek[w] || 0;
+          html += `<div class="wb-col" title="Uke ${w}: ${fmtHours(h)} timer">
+            <div class="wb-val">${h ? fmtHours(h) : ""}</div>
+            <div class="wb${h ? "" : " empty"}" style="height:${Math.max(2, (h / maxWeek) * 90)}px"></div>
+          </div>`;
+        });
+        html += `</div><div class="weekbars-labels">`;
+        g.weeks.forEach((w) => (html += `<span>${w}</span>`));
+        html += `</div><div class="wc-month-name">${escapeHtml(MONTH_NAMES[g.month])}</div>`;
+        html += `</div>`;
+      });
       html += `</div></div></div>`;
     }
 
