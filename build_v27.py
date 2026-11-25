@@ -254,14 +254,36 @@ def main():
                 subcategory = text
             continue
 
-        # Course name is the left column; the teacher sits beside and below it.
-        name = " ".join(w["text"] for w in row if w["x1"] < NAME_X_MAX).strip()
-        teacher_words = [w for w in row if NAME_X_MAX <= w["x1"] < TEACHER_X_MAX]
-        if idx + 1 < len(row_tops):
-            nxt = by_top[row_tops[idx + 1]]
-            if not any(w["x0"] >= SUMMARY_X for w in nxt) and nxt and min(w["x0"] for w in nxt) >= NAME_X_MAX:
-                teacher_words += [w for w in nxt if w["x1"] < TEACHER_X_MAX]
-        teacher = " ".join(w["text"] for w in sorted(teacher_words, key=lambda w: (w["top"], w["x0"]))).strip()
+        # Course name is the left column, the teacher column sits at x=156 on a
+        # baseline 0.4pt below the name's. Splitting them by x alone breaks when
+        # a long title overflows past x=150: pdfplumber then interleaves the two
+        # runs into one word ("...Old and New TestameTnDt/JDA/KIT/TL"). Read the
+        # two baselines from the characters instead, so each stays whole.
+        name_tops = [w["top"] for w in row if w["x0"] < NAME_X_MAX]
+        base = min(name_tops) if name_tops else top
+        name = "".join(
+            c["text"]
+            for c in sorted(
+                (
+                    c
+                    for c in chars
+                    if abs(c["top"] - base) < 0.05 and c["x0"] < TEACHER_X_MAX
+                ),
+                key=lambda c: c["x0"],
+            )
+        ).strip()
+        teacher = "".join(
+            c["text"]
+            for c in sorted(
+                (
+                    c
+                    for c in chars
+                    if base + 0.05 < c["top"] < base + 1.0
+                    and NAME_X_MAX <= c["x0"] < TEACHER_X_MAX
+                ),
+                key=lambda c: c["x0"],
+            )
+        ).strip()
 
         m = COURSE_CODE_RE.match(name)
         code = m.group(0) if m and any(ch.isdigit() for ch in m.group(0)) else None

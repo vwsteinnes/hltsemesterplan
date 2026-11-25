@@ -65,7 +65,16 @@
     return (Math.round(h * 10) / 10).toString().replace(".", ",");
   }
   function legendName(code) {
-    return STAFF[code] ? code + " – " + STAFF[code] : code;
+    if (STAFF[code]) return code + " – " + STAFF[code];
+    // The sheet marks an unconfirmed lecturer with a trailing "?" ("VP?").
+    // Name the person behind the code, but keep the plan's own reservation.
+    const base = code.replace(/\?+$/, "");
+    if (base !== code && STAFF[base]) return code + " – " + STAFF[base] + " (ikke bekreftet)";
+    return code;
+  }
+  // Full names for a tooltip where the layout only has room for the initials.
+  function lecturerTitle(codes) {
+    return codes && codes.length ? "Foreleser(e): " + codes.map(legendName).join(", ") : "";
   }
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -258,7 +267,10 @@
     DATA = PLANS[PLAN_ID];
     SECTIONS = DATA.sections;
     COURSES = DATA.courses;
-    STAFF = DATA.staff_legend || {};
+    // Only the autumn spreadsheet carries a name legend; the spring PDF has
+    // none. The initials are the same people across semesters, so pool every
+    // plan's legend and let the active plan's own entries win on a conflict.
+    STAFF = Object.assign({}, ...PLAN_IDS.map((id) => PLANS[id].staff_legend || {}), DATA.staff_legend || {});
     WEEK_NOTES = DATA.week_notes || {};
     DAY_NOTES = DATA.day_notes || {};
     EXAM_DATA = EXAMS_BY_PLAN[PLAN_ID] || { exams: [], source: null, note: null };
@@ -517,10 +529,19 @@
   }
 
   function showInfoModal() {
-    const staffRows = Object.entries(STAFF)
-      .sort((a, b) => a[1].localeCompare(b[1]))
+    // Only the codes this plan actually uses, so the list matches what the
+    // views show. Codes the sources never spell out are named as such instead
+    // of quietly disappearing.
+    const usedCodes = [...new Set(COURSES.flatMap((c) => c.lecturers))];
+    const named = usedCodes.filter((code) => legendName(code) !== code);
+    const staffRows = named
+      .map((code) => [code, legendName(code).split(" – ")[1]])
+      .sort((a, b) => a[1].localeCompare(b[1], "nb"))
       .map(([code, name]) => `<div>${escapeHtml(code)} — ${escapeHtml(name)}</div>`)
       .join("");
+    const unnamed = usedCodes
+      .filter((code) => legendName(code) === code)
+      .sort((a, b) => a.localeCompare(b, "nb"));
     const body = `
       <p class="modal-sub">${escapeHtml(DATA.term)}${
       DATA.generated_note ? " · " + escapeHtml(DATA.generated_note) : ""
@@ -558,6 +579,11 @@
       <p class="modal-sub">Emnevalget og innstillingen for redusert undervisning lagres i denne nettleseren, så de er der neste gang du åpner siden. «Nullstill» tømmer dem.</p>
       <h3 style="margin-top:14px">Fagpersoner</h3>
       <div class="legend-grid">${staffRows}</div>
+      ${
+        unnamed.length
+          ? `<p class="modal-sub">Uten navn i kilden: ${escapeHtml(unnamed.join(", "))}. Semesterplanen oppgir bare initialene for disse.</p>`
+          : ""
+      }
     `;
     renderModal("Om planen", "", body);
   }
@@ -875,7 +901,7 @@
         html += `<div class="wk-block" data-act="course" data-id="${s.course.id}"
           title="${escapeHtml((s.course.code ? s.course.code + " – " : "") + s.course.title)} · ${s.start}–${s.end} · ${fmtHours(s.hours)} t${
           s.lessons && s.lessons.length > 1 ? ` (${s.lessons.length} timer med 15 min pause)` : ""
-        }"
+        }${s.course.lecturers.length ? " · " + escapeHtml(lecturerTitle(s.course.lecturers)) : ""}"
           style="left:${pct(startMin)}%;width:${pct(endMin) - pct(startMin)}%;top:${lanes.of[idx] * LANE_H + 3}px;background:${col.bg};color:${col.fg};box-shadow:inset 3px 0 0 0 ${col.solid}">
           ${gaps}
           <span class="wk-b-code">${escapeHtml(s.course.code || s.course.title.slice(0, 18))}</span>
@@ -969,7 +995,9 @@
             <div class="time">${escapeHtml(s.label)}</div>
             <div class="tag marker-tag">${escapeHtml(s.course.code || "—")}</div>
             <div class="title">${escapeHtml(s.course.title)}</div>
-            <div class="lect">${escapeHtml(s.course.lecturers.join("/"))}</div>
+            <div class="lect" title="${escapeHtml(lecturerTitle(s.course.lecturers))}">${escapeHtml(
+            s.course.lecturers.join("/")
+          )}</div>
           </div>`;
           return;
         }
@@ -990,7 +1018,9 @@
           <div class="time">${s.start}–${s.end}</div>
           <div class="tag" style="background:${col.bg};color:${col.fg}">${escapeHtml(s.course.code || "—")}</div>
           <div class="title">${escapeHtml(s.course.title)} <span style="color:var(--text-faint)">(${fmtHours(s.hours)} t)</span></div>
-          <div class="lect">${s.course.lecturers.join("/")}</div>
+          <div class="lect" title="${escapeHtml(lecturerTitle(s.course.lecturers))}">${escapeHtml(
+          s.course.lecturers.join("/")
+        )}</div>
         </div>`;
       });
       html += `</div>`;
