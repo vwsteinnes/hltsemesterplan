@@ -1249,15 +1249,22 @@
       .forEach(([l, h]) => html += barRow(legendName(l), h, maxLecturer, "var(--accent)"));
     html += `</div>`;
 
-    html += `<div class="card" style="grid-column:1/-1"><h3>Timer per uke</h3>`;
-    html += `<div class="weekbars-wrap"><div class="weekbars">`;
-    for (let w = 31; w <= 51; w++) {
-      const h = byWeek[w] || 0;
-      html += `<div class="wb" style="height:${Math.max(2, (h / maxWeek) * 90)}px" title="Uke ${w}: ${fmtHours(h)} t"></div>`;
+    // The week axis follows the active plan (autumn runs ~31-51, spring ~1-20),
+    // so this must not be a hardcoded range.
+    const statWeeks = TIMELINE_WEEKS.length
+      ? TIMELINE_WEEKS
+      : Object.keys(byWeek).map(Number).sort((a, b) => a - b);
+    if (statWeeks.length) {
+      html += `<div class="card" style="grid-column:1/-1"><h3>Timer per uke</h3>`;
+      html += `<div class="weekbars-wrap"><div class="weekbars">`;
+      statWeeks.forEach((w) => {
+        const h = byWeek[w] || 0;
+        html += `<div class="wb" style="height:${Math.max(2, (h / maxWeek) * 90)}px" title="Uke ${w}: ${fmtHours(h)} t"></div>`;
+      });
+      html += `</div><div class="weekbars-labels">`;
+      statWeeks.forEach((w) => (html += `<span>${w}</span>`));
+      html += `</div></div></div>`;
     }
-    html += `</div><div class="weekbars-labels">`;
-    for (let w = 31; w <= 51; w++) html += `<span>${w}</span>`;
-    html += `</div></div></div>`;
 
     html += `</div>`;
     root.innerHTML = html;
