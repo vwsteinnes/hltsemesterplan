@@ -267,6 +267,9 @@ details.filter-popover[open] > summary { border-color: var(--accent); }
   margin: 4px;
   line-height: 1.4;
 }
+/* Sheet furniture: only the phone layout turns the panel into a bottom sheet. */
+.popover-sheet-head { display: none; }
+
 .popover-actions {
   display: flex;
   gap: 8px;
@@ -897,14 +900,60 @@ details.filter-popover[open] > summary { border-color: var(--accent); }
    instead, so they can never push the page sideways. */
 @media (max-width: 700px) {
   details.filter-popover { position: static; }
+  /* Anchored under the toolbar, the panel's lower half — "Velg alle" and
+     "Fjern alle" included — fell past the bottom of a phone screen. It is a
+     bottom sheet here instead: pinned to the viewport, never taller than it,
+     so the actions stay in reach however long the course list is. */
   .popover-panel {
-    left: 10px;
-    right: 10px;
+    position: fixed;
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: 0;
     width: auto;
     min-width: 0;
     max-width: none;
-    max-height: 60vh;
+    max-height: 82vh;
+    max-height: 82dvh;
+    border-width: 1px 0 0;
+    border-radius: 16px 16px 0 0;
+    padding: 0 12px calc(10px + env(safe-area-inset-bottom));
+    box-shadow: 0 -12px 32px rgba(0, 0, 0, 0.4);
+    overscroll-behavior: contain;
   }
+  details.filter-popover[open]::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 29;
+    background: rgba(0, 0, 0, 0.45);
+  }
+  .popover-sheet-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    margin-bottom: 8px;
+    padding: 12px 0 9px;
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border);
+    font-size: 14px;
+  }
+  .popover-sheet-head button {
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 7px 14px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--bg-sunken);
+    color: var(--accent);
+    cursor: pointer;
+  }
+  .popover-actions { bottom: calc(-10px - env(safe-area-inset-bottom)); }
   /* Finger-sized targets: the desktop sizes are comfortable with a cursor but
      tight for touch. */
   .popover-group-head { padding: 9px 8px 9px 9px; }
@@ -3580,7 +3629,13 @@ window.HLTParsePlan = (function () {
     const panel = document.getElementById("course-panel");
 
     const reducedCourses = COURSES.filter((c) => c.reduced_available);
+    // The panel is rebuilt on every tick; without this the list jumps back to
+    // the top each time, which is unusable in the phone sheet.
+    const keepScroll = panel.scrollTop;
     let html = "";
+    // Only shown in the phone layout, where the panel is a bottom sheet and the
+    // "Emne" button that opened it can be scrolled out of reach behind it.
+    html += `<div class="popover-sheet-head"><strong>Velg emner</strong><button type="button" data-act="close">Ferdig</button></div>`;
     if (EXAMS.length) {
       html += `<label class="popover-mode" title="Eksamensdatoer og innleveringsfrister vises sammen med undervisningen">
         <input type="checkbox" data-act="exams"${state.showExams ? " checked" : ""}>
@@ -3627,6 +3682,7 @@ window.HLTParsePlan = (function () {
     });
     html += `<div class="popover-actions"><button data-act="all">Velg alle</button><button data-act="none">Fjern alle</button></div>`;
     panel.innerHTML = html;
+    panel.scrollTop = keepScroll;
 
     // A part-selected category reads as neither on nor off.
     SECTIONS.forEach((section) => {
@@ -3648,6 +3704,9 @@ window.HLTParsePlan = (function () {
       updateFilterSummaries();
       renderView();
     };
+
+    const closeBtn = panel.querySelector('[data-act="close"]');
+    if (closeBtn && details) closeBtn.addEventListener("click", () => (details.open = false));
 
     panel.querySelector('[data-act="reduced"]').addEventListener("change", (e) => {
       state.reducedOnly = e.target.checked;
@@ -3723,9 +3782,14 @@ window.HLTParsePlan = (function () {
     document.getElementById("info-btn").onclick = showInfoModal;
     document.getElementById("export-ics").onclick = exportIcs;
 
-    document.querySelectorAll("details.filter-popover").forEach((d) =>
-      d.addEventListener("toggle", () => positionPopover(d))
-    );
+    document.querySelectorAll("details.filter-popover").forEach((d) => {
+      d.addEventListener("toggle", () => positionPopover(d));
+      // In the phone layout the backdrop is a pseudo-element of the <details>,
+      // so a tap on it lands on the element itself and nothing inside.
+      d.addEventListener("click", (e) => {
+        if (e.target === d) d.open = false;
+      });
+    });
 
     updateFilterSummaries();
   }

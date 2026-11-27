@@ -1504,7 +1504,13 @@
     const panel = document.getElementById("course-panel");
 
     const reducedCourses = COURSES.filter((c) => c.reduced_available);
+    // The panel is rebuilt on every tick; without this the list jumps back to
+    // the top each time, which is unusable in the phone sheet.
+    const keepScroll = panel.scrollTop;
     let html = "";
+    // Only shown in the phone layout, where the panel is a bottom sheet and the
+    // "Emne" button that opened it can be scrolled out of reach behind it.
+    html += `<div class="popover-sheet-head"><strong>Velg emner</strong><button type="button" data-act="close">Ferdig</button></div>`;
     if (EXAMS.length) {
       html += `<label class="popover-mode" title="Eksamensdatoer og innleveringsfrister vises sammen med undervisningen">
         <input type="checkbox" data-act="exams"${state.showExams ? " checked" : ""}>
@@ -1551,6 +1557,7 @@
     });
     html += `<div class="popover-actions"><button data-act="all">Velg alle</button><button data-act="none">Fjern alle</button></div>`;
     panel.innerHTML = html;
+    panel.scrollTop = keepScroll;
 
     // A part-selected category reads as neither on nor off.
     SECTIONS.forEach((section) => {
@@ -1572,6 +1579,9 @@
       updateFilterSummaries();
       renderView();
     };
+
+    const closeBtn = panel.querySelector('[data-act="close"]');
+    if (closeBtn && details) closeBtn.addEventListener("click", () => (details.open = false));
 
     panel.querySelector('[data-act="reduced"]').addEventListener("change", (e) => {
       state.reducedOnly = e.target.checked;
@@ -1647,9 +1657,14 @@
     document.getElementById("info-btn").onclick = showInfoModal;
     document.getElementById("export-ics").onclick = exportIcs;
 
-    document.querySelectorAll("details.filter-popover").forEach((d) =>
-      d.addEventListener("toggle", () => positionPopover(d))
-    );
+    document.querySelectorAll("details.filter-popover").forEach((d) => {
+      d.addEventListener("toggle", () => positionPopover(d));
+      // In the phone layout the backdrop is a pseudo-element of the <details>,
+      // so a tap on it lands on the element itself and nothing inside.
+      d.addEventListener("click", (e) => {
+        if (e.target === d) d.open = false;
+      });
+    });
 
     updateFilterSummaries();
   }
